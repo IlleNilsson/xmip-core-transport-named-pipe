@@ -26,9 +26,11 @@
 pub mod pipe;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 pub use pipe::Listener;
 use transport::error::Result;
+use transport::loopback::{FarEnd, Loopback};
 use transport::{Arrived, Directions, Transport};
 
 pub struct NamedPipeTransport {
@@ -116,6 +118,90 @@ impl Transport for NamedPipeTransport {
     }
 }
 
+impl NamedPipeTransport {
+    /// Both ends on this machine: a pipe of this process's own. Each far
+    /// end makes a fresh one, so rounds driven at once from several threads
+    /// do not read each other's Stream; the address is the pipe's path.
+    #[must_use]
+    pub fn loopback() -> Self {
+        Self::new(&fresh_name())
+    }
+}
+
+/// A pipe name no other far end of this process has: the pipe is the
+/// address, so two rounds at once need two pipes.
+fn fresh_name() -> String {
+    static COUNTER: AtomicU32 = AtomicU32::new(1);
+    format!(
+        "xmip-loopback-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// A made pipe waiting for its one connection.
+struct Made {
+    transport: NamedPipeTransport,
+    listener: Listener,
+    address: String,
+}
+
+impl FarEnd for Made {
+    fn address(&self) -> &str {
+        &self.address
+    }
+
+    fn take_one(self: Box<Self>) -> Result<Arrived> {
+        self.transport.accept_one(&self.listener)
+    }
+}
+
+impl Loopback for NamedPipeTransport {
+    fn far_end(&self) -> Result<Box<dyn FarEnd>> {
+        let transport = Self::new(&fresh_name());
+        let listener = transport.bind()?;
+        let address = transport.path().display().to_string();
+        Ok(Box::new(Made {
+            transport,
+            listener,
+            address,
+        }))
+    }
+
+    /// On Windows a connection that writes nothing and closes before the
+    /// reader is waiting is one the pipe never saw: the object drops it,
+    /// and the reader waits on. A Stream of nothing therefore reaches a
+    /// reader already in its accept — the FIFO carries it whichever end
+    /// opened first — and a loopback, whose two ends start together,
+    /// declares it rather than racing for it.
+    fn refuses(&self, payload: &[u8]) -> Option<String> {
+        if cfg!(windows) && payload.is_empty() {
+            Some(String::from(
+                "a Stream of nothing: a Windows pipe drops a connection that \
+                 writes nothing and closes before the reader is waiting",
+            ))
+        } else {
+            None
+        }
+    }
+
+    fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {
+        if let Some(why) = self.refuses(payload) {
+            return Err(transport::error::protocol_error(why));
+        }
+        Self::new(address).send(address, payload)
+    }
+
+    /// A pipe is connected to by opening it, not by a TCP connect: open,
+    /// write one byte, close. One byte rather than none, because a poke
+    /// that writes nothing is, on Windows, a connection that never
+    /// happened, and the far end would wait on; the byte is the far end's
+    /// to discard, since the failed send is what the round reports.
+    fn unblock(&self, address: &str) {
+        drop(pipe::write_once(&target_path(address), &[0]));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,6 +212,52 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |since| since.as_nanos());
         format!("xmip-pipe-{name}-{}-{nanos}", std::process::id())
+    }
+
+    fn edge_payloads() -> Vec<(&'static str, Vec<u8>)> {
+        vec![
+            ("empty", Vec::new()),
+            ("one byte", vec![0x2a]),
+            ("every byte", (0..=255).collect()),
+            ("nul run", vec![0; 512]),
+            ("high bytes", vec![0xff; 512]),
+            ("crlf storm", b"\r\n".repeat(400)),
+        ]
+    }
+
+    #[test]
+    fn the_loopback_returns_the_edge_payloads_whole() {
+        let pair = NamedPipeTransport::loopback();
+        for (name, bytes) in edge_payloads() {
+            if let Some(why) = pair.refuses(&bytes) {
+                assert!(cfg!(windows) && name == "empty", "{name}: {why}");
+                let error = pair.round(&bytes).expect_err("refused, and judged");
+                assert!(error.message.contains("a Stream of nothing"), "{error}");
+                continue;
+            }
+            let arrived = pair
+                .round(&bytes)
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert_eq!(arrived.bytes, bytes, "{name}");
+            assert!(arrived.origin_uri.starts_with("pipe://"), "{name}");
+        }
+        assert!(pair.ceiling().is_none());
+        assert!(pair.refuses(b"\r\n\0").is_none());
+        assert_eq!(pair.refuses(b"").is_some(), cfg!(windows));
+    }
+
+    #[test]
+    fn each_far_end_is_its_own_pipe_and_a_long_stream_arrives_whole() {
+        let pair = NamedPipeTransport::loopback();
+        let first = pair.far_end().expect("the first pipe");
+        let second = pair.far_end().expect("the second pipe");
+        assert_ne!(first.address(), second.address());
+        let long: Vec<u8> = (0..200_000u32)
+            .map(|n| u8::try_from(n % 251).unwrap_or(0))
+            .collect();
+        let arrived = pair.round(&long).expect("the long one");
+        assert_eq!(arrived.bytes, long);
+        assert!(arrived.origin_uri.contains("xmip-loopback-"));
     }
 
     #[test]
@@ -159,18 +291,15 @@ mod tests {
 
     #[test]
     fn a_connection_is_one_stream_read_to_its_end() {
-        let name = unique("stream");
-        let far_end = NamedPipeTransport::new(&name);
-        let listener = far_end.bind().expect("making the pipe");
-        let target = format!("pipe://{name}");
-        let sender = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(20));
-            NamedPipeTransport::new("elsewhere").send(&target, b"over a pipe\0\xff")
-        });
-        let arrived = far_end.accept_one(&listener).expect("accepting");
-        sender.join().expect("thread").expect("sending");
+        let pair = NamedPipeTransport::loopback();
+        let arrived = pair.round(b"over a pipe\0\xff").expect("round");
         assert_eq!(arrived.bytes, b"over a pipe\0\xff");
-        assert_eq!(arrived.origin_uri, far_end.origin());
+        let far = pair.far_end().expect("a pipe of its own");
+        let origin = origin_of(&target_path(far.address()));
+        assert!(origin.starts_with("pipe://"), "{origin}");
+        assert_ne!(origin, arrived.origin_uri, "each far end is its own pipe");
+        assert!(arrived.origin_uri.starts_with("pipe://"));
+        assert!(arrived.origin_uri.contains("xmip-loopback-"));
     }
 
     #[test]
