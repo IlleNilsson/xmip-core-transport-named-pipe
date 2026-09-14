@@ -21,6 +21,11 @@ transport = { package = "xmip-core-transport", git = "https://github.com/IlleNil
 # Windows and mkfifo on Unix are what the standard library does not offer.
 interprocess = "2.4"
 
+[dev-dependencies]
+# The loopback payloads the tests drive, from the capability's test
+# support and never a production build (ADR-0044).
+transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main", features = ["test-support"] }
+
 [lints.rust]
 unsafe_code = "forbid"
 

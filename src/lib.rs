@@ -206,23 +206,13 @@ impl Loopback for NamedPipeTransport {
 mod tests {
     use super::*;
     use std::time::Duration;
+    use transport::payload::edge_payloads;
 
     fn unique(name: &str) -> String {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |since| since.as_nanos());
         format!("xmip-pipe-{name}-{}-{nanos}", std::process::id())
-    }
-
-    fn edge_payloads() -> Vec<(&'static str, Vec<u8>)> {
-        vec![
-            ("empty", Vec::new()),
-            ("one byte", vec![0x2a]),
-            ("every byte", (0..=255).collect()),
-            ("nul run", vec![0; 512]),
-            ("high bytes", vec![0xff; 512]),
-            ("crlf storm", b"\r\n".repeat(400)),
-        ]
     }
 
     #[test]
