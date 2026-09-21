@@ -27,6 +27,7 @@ pub mod pipe;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 
 pub use pipe::Listener;
 use transport::error::Result;
@@ -35,6 +36,7 @@ use transport::{Arrived, Directions, Transport};
 
 pub struct NamedPipeTransport {
     path: PathBuf,
+    timeout: Option<Duration>,
 }
 
 impl NamedPipeTransport {
@@ -44,7 +46,16 @@ impl NamedPipeTransport {
     pub fn new(name: &str) -> Self {
         Self {
             path: pipe::path_of(name),
+            timeout: None,
         }
+    }
+
+    /// The same pipe, waiting at most `timeout` for a writer. Unset, a
+    /// listening pipe waits for as long as it takes.
+    #[must_use]
+    pub const fn timing_out_after(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
     }
 
     /// Where the pipe is.
@@ -72,7 +83,7 @@ impl NamedPipeTransport {
     /// # Errors
     /// Where the pipe could not be read.
     pub fn accept_one(&self, listener: &Listener) -> Result<Arrived> {
-        let bytes = listener.accept_one()?;
+        let bytes = listener.accept_one(self.timeout)?;
         Ok(Arrived::new(self.origin(), bytes))
     }
 }
@@ -124,7 +135,7 @@ impl NamedPipeTransport {
     /// do not read each other's Stream; the address is the pipe's path.
     #[must_use]
     pub fn loopback() -> Self {
-        Self::new(&fresh_name())
+        Self::new(&fresh_name()).timing_out_after(transport::LOOPBACK_TIMEOUT)
     }
 }
 
