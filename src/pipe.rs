@@ -11,6 +11,7 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use transport::error::{Result, classify};
 
@@ -76,30 +77,150 @@ impl Listener {
         &self.path
     }
 
-    /// Wait for one writer, and read what it writes to its end.
+    /// Wait for one writer within `timeout`, and read what it writes to its
+    /// end. `None` waits for as long as it takes, which is what a listening
+    /// Receive Location does.
     ///
     /// # Errors
-    /// Where the pipe could not be opened or read.
-    pub fn accept_one(&self) -> Result<Vec<u8>> {
+    /// Where no writer came within `timeout`, or the pipe could not be opened
+    /// or read.
+    pub fn accept_one(&self, timeout: Option<Duration>) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
         #[cfg(windows)]
         {
-            let mut stream = self
-                .inner
-                .accept()
-                .map_err(|e| classify("accepting a connection", &e))?;
+            let mut stream = self.accept_within(timeout)?;
             stream
                 .read_to_end(&mut bytes)
                 .map_err(|e| classify("reading the pipe", &e))?;
         }
         #[cfg(not(windows))]
         {
-            let mut file =
-                std::fs::File::open(&self.path).map_err(|e| classify("opening the pipe", &e))?;
+            let mut file = self.open_within(timeout)?;
             file.read_to_end(&mut bytes)
                 .map_err(|e| classify("reading the pipe", &e))?;
         }
         Ok(bytes)
+    }
+
+    /// The listener's accept, bounded by `timeout`.
+    ///
+    /// It waited for a writer for as long as it took until 2026-09-21, and a
+    /// far end whose near end never came waited for good — the defect that
+    /// hung the Playground's gate six times over TCP, and the same line here.
+    /// Polled, because the pipe listener has no accept with a deadline:
+    /// non-blocking, `accept` answers `WouldBlock` while no writer is there,
+    /// and a two-millisecond nap costs a thousandth of the shortest timeout
+    /// anyone passes. The listener and the stream are handed back blocking on
+    /// every way out, because a non-blocking stream would make the read below
+    /// fail on an empty pipe instead of waiting for the writer to finish.
+    #[cfg(windows)]
+    fn accept_within(
+        &self,
+        timeout: Option<Duration>,
+    ) -> Result<
+        interprocess::os::windows::named_pipe::PipeStream<
+            interprocess::os::windows::named_pipe::pipe_mode::Bytes,
+            interprocess::os::windows::named_pipe::pipe_mode::Bytes,
+        >,
+    > {
+        use std::io::ErrorKind;
+        use std::time::Instant;
+        use transport::TransportError;
+
+        let Some(timeout) = timeout else {
+            return self
+                .inner
+                // bounded: the None arm: a listening pipe waits as long as it runs
+                .accept()
+                .map_err(|e| classify("accepting a connection", &e));
+        };
+
+        self.inner
+            .set_nonblocking(true)
+            .map_err(|e| classify("waiting for a writer", &e))?;
+
+        let deadline = Instant::now() + timeout;
+        let accepted = loop {
+            // bounded: polled non-blocking, inside the deadline above
+            match self.inner.accept() {
+                Ok(stream) => break Ok(stream),
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        break Err(TransportError::retryable(format!(
+                            "no writer came within {} ms",
+                            timeout.as_millis()
+                        ))
+                        .at("accepting a connection"));
+                    }
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Err(error) => break Err(classify("accepting a connection", &error)),
+            }
+        };
+
+        self.inner
+            .set_nonblocking(false)
+            .map_err(|e| classify("waiting for a writer", &e))?;
+
+        let stream = accepted?;
+        stream
+            .set_nonblocking(false)
+            .map_err(|e| classify("settling the accepted pipe", &e))?;
+
+        Ok(stream)
+    }
+}
+
+#[cfg(not(windows))]
+impl Listener {
+    /// The FIFO opened for reading within `timeout`; `None` waits for a
+    /// writer as long as it takes.
+    ///
+    /// A FIFO's open for reading blocks until a writer opens the other end,
+    /// and it waited for good until 2026-09-21. It could not be bounded on
+    /// the machine the Windows half was written on, and the owner's Linux
+    /// guest is what made it possible to write and run this one.
+    ///
+    /// The open happens on a thread of its own and is waited on with a
+    /// deadline. Opening with `O_NONBLOCK` instead would return at once and
+    /// then read an end-of-file for a writer that has not arrived yet, which
+    /// is indistinguishable from one that has come and gone. When the
+    /// deadline passes, the waiting open is released by opening the other end
+    /// for writing and closing it — the one thing a blocked FIFO open waits
+    /// for — so no thread is left behind.
+    fn open_within(&self, timeout: Option<Duration>) -> Result<std::fs::File> {
+        use std::sync::mpsc::{RecvTimeoutError, channel};
+        use transport::TransportError;
+
+        let Some(timeout) = timeout else {
+            return std::fs::File::open(&self.path).map_err(|e| classify("opening the pipe", &e));
+        };
+
+        let path = self.path.clone();
+        let (handing, arrival) = channel();
+        let opener = std::thread::spawn(move || {
+            drop(handing.send(std::fs::File::open(&path)));
+        });
+
+        match arrival.recv_timeout(timeout) {
+            Ok(file) => {
+                drop(opener.join());
+                file.map_err(|e| classify("opening the pipe", &e))
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                drop(std::fs::OpenOptions::new().write(true).open(&self.path));
+                drop(opener.join());
+                Err(TransportError::retryable(format!(
+                    "no writer came within {} ms",
+                    timeout.as_millis()
+                ))
+                .at("opening the pipe"))
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                drop(opener.join());
+                Err(TransportError::permanent("the pipe's opener stopped").at("opening the pipe"))
+            }
+        }
     }
 }
 
@@ -140,6 +261,28 @@ pub fn write_once(path: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pipe_nobody_writes_to_gives_up_within_its_timeout() {
+        // The defect this asserts is the one that hung the Playground's gate:
+        // a far end whose near end never came waited for good (2026-09-21).
+        let path = path_of(&format!("xmip-unanswered-{}", std::process::id()));
+        let listener = Listener::create(&path).expect("the pipe is made");
+        let began = std::time::Instant::now();
+
+        let refused = listener.accept_one(Some(Duration::from_millis(200)));
+        let waited = began.elapsed();
+
+        assert!(refused.is_err(), "nothing was written, so nothing arrived");
+        assert!(
+            waited < Duration::from_secs(2),
+            "gave up after {waited:?}, which is not a timeout"
+        );
+        assert!(
+            waited >= Duration::from_millis(150),
+            "gave up after {waited:?}, before it had waited"
+        );
+    }
 
     #[test]
     fn a_bare_name_becomes_the_systems_path_and_a_path_stays() {
