@@ -31,6 +31,7 @@ use std::time::Duration;
 
 pub use pipe::Listener;
 use transport::error::Result;
+use transport::held::Held;
 use transport::loopback::{FarEnd, Loopback};
 use transport::{Arrived, Directions, Transport};
 
@@ -150,33 +151,15 @@ fn fresh_name() -> String {
     )
 }
 
-/// A made pipe waiting for its one connection.
-struct Made {
-    transport: NamedPipeTransport,
-    listener: Listener,
-    address: String,
-}
-
-impl FarEnd for Made {
-    fn address(&self) -> &str {
-        &self.address
-    }
-
-    fn take_one(self: Box<Self>) -> Result<Arrived> {
-        self.transport.accept_one(&self.listener)
-    }
-}
-
 impl Loopback for NamedPipeTransport {
+    /// A made pipe waiting for its one connection.
     fn far_end(&self) -> Result<Box<dyn FarEnd>> {
         let transport = Self::new(&fresh_name());
         let listener = transport.bind()?;
         let address = transport.path().display().to_string();
-        Ok(Box::new(Made {
-            transport,
-            listener,
-            address,
-        }))
+        Ok(Box::new(Held::new(address, move || {
+            transport.accept_one(&listener)
+        })))
     }
 
     /// On Windows a connection that writes nothing and closes before the
