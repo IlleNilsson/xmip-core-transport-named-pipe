@@ -32,6 +32,7 @@ use std::time::Duration;
 pub use pipe::Listener;
 use transport::error::Result;
 use transport::held::Held;
+use transport::kept::Kept;
 use transport::loopback::{FarEnd, Loopback};
 use transport::{Arrived, Configured, Directions, Transport};
 use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
@@ -39,6 +40,9 @@ use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 pub struct NamedPipeTransport {
     path: PathBuf,
     timeout: Option<Duration>,
+    /// The pipe the first receive makes, and every receive takes from: a
+    /// writer that opens it between two receives waits for the next.
+    receiving: Kept<Listener>,
 }
 
 impl NamedPipeTransport {
@@ -49,6 +53,7 @@ impl NamedPipeTransport {
         Self {
             path: pipe::path_of(name),
             timeout: None,
+            receiving: Kept::new(),
         }
     }
 
@@ -78,6 +83,11 @@ impl NamedPipeTransport {
     /// Where the name is not permitted.
     pub fn bind(&self) -> Result<Listener> {
         Listener::create(&self.path)
+    }
+
+    /// The pipe made, and its path: what a Receive Location keeps.
+    fn made(&self) -> Result<(Listener, String)> {
+        Ok((self.bind()?, self.path.display().to_string()))
     }
 
     /// Take one connection from an already-made pipe, to its end.
@@ -119,10 +129,11 @@ impl Transport for NamedPipeTransport {
         Directions::BOTH
     }
 
-    /// Make the pipe, and take one connection to its end.
+    /// Take one connection to its end, on the pipe the first receive made
+    /// and kept.
     fn receive(&self) -> Result<Vec<Arrived>> {
-        let listener = self.bind()?;
-        Ok(vec![self.accept_one(&listener)?])
+        let listener = self.receiving.bound(|| self.made())?;
+        Ok(vec![self.accept_one(listener)?])
     }
 
     /// Open the pipe the target names, write the bytes, close.
@@ -231,6 +242,23 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |since| since.as_nanos());
         format!("xmip-pipe-{name}-{}-{nanos}", std::process::id())
+    }
+
+    #[test]
+    fn every_receive_takes_from_the_pipe_the_first_made() {
+        let receiver = NamedPipeTransport::loopback();
+        receiver.receiving.bound(|| receiver.made()).expect("made");
+        let address = receiver.receiving.address().expect("address").to_string();
+        // Each writer opens the pipe before its receive begins: the pipe
+        // made by the first receive is still there. One writer at a time,
+        // because a FIFO joins writers that overlap into one Stream.
+        for round in 0..5u8 {
+            let at = address.clone();
+            let writer =
+                std::thread::spawn(move || NamedPipeTransport::new(&at).send(&at, &[round]));
+            assert_eq!(receiver.receive().expect("received")[0].bytes, [round]);
+            writer.join().expect("writer").expect("written");
+        }
     }
 
     #[test]
