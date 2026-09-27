@@ -85,78 +85,48 @@ impl Listener {
     /// or read.
     pub fn accept_one(&self, timeout: Option<Duration>) -> Result<Vec<u8>> {
         #[cfg(windows)]
-        let mut pipe = self.accept_within(timeout)?;
+        let mut pipe = transport::socket::accept_within(self, timeout, "no writer came")?;
         #[cfg(not(windows))]
         let mut pipe = self.open_within(timeout)?;
         Ok(net::read::to_end(&mut pipe, net::MAX_BODY)?)
     }
+}
 
-    /// The listener's accept, bounded by `timeout`.
-    ///
-    /// It waited for a writer for as long as it took until 2026-09-21, and a
-    /// far end whose near end never came waited for good — the defect that
-    /// hung the Playground's gate six times over TCP, and the same line here.
-    /// Polled, because the pipe listener has no accept with a deadline:
-    /// non-blocking, `accept` answers `WouldBlock` while no writer is there,
-    /// and a two-millisecond nap costs a thousandth of the shortest timeout
-    /// anyone passes. The listener and the stream are handed back blocking on
-    /// every way out, because a non-blocking stream would make the read below
-    /// fail on an empty pipe instead of waiting for the writer to finish.
-    #[cfg(windows)]
-    fn accept_within(
-        &self,
-        timeout: Option<Duration>,
-    ) -> Result<
-        interprocess::os::windows::named_pipe::PipeStream<
-            interprocess::os::windows::named_pipe::pipe_mode::Bytes,
-            interprocess::os::windows::named_pipe::pipe_mode::Bytes,
-        >,
-    > {
-        use std::io::ErrorKind;
-        use std::time::Instant;
-        use transport::TransportError;
+/// The pipe's accept, bounded by `timeout` through the capability's one
+/// bounded accept (`transport::socket::accept_within`).
+///
+/// It waited for a writer for as long as it took until 2026-09-21, and a
+/// far end whose near end never came waited for good — the defect that
+/// hung the Playground's gate six times over TCP, and the same line here.
+/// A pipe instance is not a socket and has no readiness the capability's
+/// wait can block on; its connection is signalled through overlapped I/O,
+/// which the pipe library does not offer and this crate may not write
+/// unsafely. So the wait here is a nap of a quarter of a millisecond
+/// between tries, where the socket listeners wait on the operating
+/// system.
+#[cfg(windows)]
+impl transport::socket::Acceptor for Listener {
+    type Accepted = interprocess::os::windows::named_pipe::PipeStream<
+        interprocess::os::windows::named_pipe::pipe_mode::Bytes,
+        interprocess::os::windows::named_pipe::pipe_mode::Bytes,
+    >;
 
-        let Some(timeout) = timeout else {
-            return self
-                .inner
-                // bounded: the None arm: a listening pipe waits as long as it runs
-                .accept()
-                .map_err(|e| classify("accepting a connection", &e));
-        };
+    fn accept_now(&self) -> std::io::Result<Self::Accepted> {
+        // bounded: the caller's, accept_within's deadline or its None arm
+        self.inner.accept()
+    }
 
-        self.inner
-            .set_nonblocking(true)
-            .map_err(|e| classify("waiting for a writer", &e))?;
+    fn nonblocking(&self, nonblocking: bool) -> std::io::Result<()> {
+        self.inner.set_nonblocking(nonblocking)
+    }
 
-        let deadline = Instant::now() + timeout;
-        let accepted = loop {
-            // bounded: polled non-blocking, inside the deadline above
-            match self.inner.accept() {
-                Ok(stream) => break Ok(stream),
-                Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    if Instant::now() >= deadline {
-                        break Err(TransportError::retryable(format!(
-                            "no writer came within {} ms",
-                            timeout.as_millis()
-                        ))
-                        .at("accepting a connection"));
-                    }
-                    std::thread::sleep(Duration::from_millis(2));
-                }
-                Err(error) => break Err(classify("accepting a connection", &error)),
-            }
-        };
+    fn settle(accepted: &Self::Accepted) -> std::io::Result<()> {
+        accepted.set_nonblocking(false)
+    }
 
-        self.inner
-            .set_nonblocking(false)
-            .map_err(|e| classify("waiting for a writer", &e))?;
-
-        let stream = accepted?;
-        stream
-            .set_nonblocking(false)
-            .map_err(|e| classify("settling the accepted pipe", &e))?;
-
-        Ok(stream)
+    fn wait_ready(&self, within: Duration) -> std::io::Result<()> {
+        std::thread::sleep(within.min(Duration::from_micros(250)));
+        Ok(())
     }
 }
 
