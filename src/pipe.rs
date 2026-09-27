@@ -9,7 +9,6 @@
 //! closes, the reader sees the end — and nothing above this file knows
 //! which one it has.
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -85,21 +84,11 @@ impl Listener {
     /// Where no writer came within `timeout`, or the pipe could not be opened
     /// or read.
     pub fn accept_one(&self, timeout: Option<Duration>) -> Result<Vec<u8>> {
-        let mut bytes = Vec::new();
         #[cfg(windows)]
-        {
-            let mut stream = self.accept_within(timeout)?;
-            stream
-                .read_to_end(&mut bytes)
-                .map_err(|e| classify("reading the pipe", &e))?;
-        }
+        let mut pipe = self.accept_within(timeout)?;
         #[cfg(not(windows))]
-        {
-            let mut file = self.open_within(timeout)?;
-            file.read_to_end(&mut bytes)
-                .map_err(|e| classify("reading the pipe", &e))?;
-        }
-        Ok(bytes)
+        let mut pipe = self.open_within(timeout)?;
+        Ok(net::read::to_end(&mut pipe, net::MAX_BODY)?)
     }
 
     /// The listener's accept, bounded by `timeout`.
