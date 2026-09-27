@@ -33,7 +33,8 @@ pub use pipe::Listener;
 use transport::error::Result;
 use transport::held::Held;
 use transport::loopback::{FarEnd, Loopback};
-use transport::{Arrived, Directions, Transport};
+use transport::{Arrived, Configured, Directions, Transport};
+use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 
 pub struct NamedPipeTransport {
     path: PathBuf,
@@ -130,6 +131,29 @@ impl Transport for NamedPipeTransport {
     }
 }
 
+impl Configured for NamedPipeTransport {
+    /// The address is the pipe: a bare name, or a path as it is. A Receive
+    /// Location makes it; a Send Location's target names the pipe it opens.
+    const SETTINGS: &'static Settings = &Settings {
+        technology: env!("CARGO_PKG_NAME"),
+        settings: &[Setting {
+            name: "timeout",
+            kind: Kind::Duration,
+            presence: Presence::Optional,
+            meaning: "How long a made pipe waits for a writer; unbounded when left out.",
+            applies: Applies::Receive,
+        }],
+    };
+
+    fn configured(address: &str, settings: &Read) -> Result<Self> {
+        let transport = Self::new(address);
+        Ok(match settings.optional_duration("timeout") {
+            Some(timeout) => transport.timing_out_after(timeout),
+            None => transport,
+        })
+    }
+}
+
 impl NamedPipeTransport {
     /// Both ends on this machine: a pipe of this process's own. Each far
     /// end makes a fresh one, so rounds driven at once from several threads
@@ -207,6 +231,27 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |since| since.as_nanos());
         format!("xmip-pipe-{name}-{}-{nanos}", std::process::id())
+    }
+
+    #[test]
+    fn named_pipe_declares_its_settings_and_reads_through_them() {
+        use xcore::settings::Given;
+        assert_eq!(
+            NamedPipeTransport::SETTINGS.problems(),
+            Vec::<String>::new()
+        );
+        let given = [("timeout".to_string(), Given::Text("250ms".to_string()))];
+        let built = NamedPipeTransport::open("orders", Applies::Receive, &given).expect("built");
+        assert_eq!(built.timeout, Some(Duration::from_millis(250)));
+        assert_eq!(built.path(), pipe::path_of("orders"));
+        let Err(refused) = NamedPipeTransport::open("orders", Applies::Send, &given) else {
+            panic!("timeout is a receive setting");
+        };
+        assert!(
+            refused.message.contains("\"timeout\""),
+            "{}",
+            refused.message
+        );
     }
 
     #[test]
