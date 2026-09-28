@@ -6,6 +6,8 @@ A Receive Location waits for a writer within its timeout through the capability'
 
 A Receive Location keeps its pipe, made on the first receive and kept (`transport::kept::Kept`): a writer that opens it between two receives waits for the next, where until 2026-09-27 each receive made the pipe anew.
 
+A send target is read by `net::Target` in [xmip-core-library-net](https://github.com/IlleNilsson/xmip-core-library-net), the one reading of a URI every technology calls. Until 2026-09-28 this technology stripped its scheme by hand.
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain for the whole estate. Do not change it

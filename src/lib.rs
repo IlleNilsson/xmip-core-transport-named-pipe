@@ -29,6 +29,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+use net::Target;
 pub use pipe::Listener;
 use transport::error::Result;
 use transport::held::Held;
@@ -103,7 +104,7 @@ impl NamedPipeTransport {
 /// The path a target names: `pipe://` and a name or path, or either bare.
 #[must_use]
 pub fn target_path(target: &str) -> PathBuf {
-    pipe::path_of(target.strip_prefix("pipe://").unwrap_or(target))
+    pipe::path_of(Target::under(&["pipe"], target).map_or(target, |named| named.after_scheme()))
 }
 
 /// `pipe://` and the pipe's name, forward slashes throughout.
