@@ -76,19 +76,22 @@ impl Listener {
         &self.path
     }
 
-    /// Wait for one writer within `timeout`, and read what it writes to its
-    /// end. `None` waits for as long as it takes, which is what a listening
-    /// Receive Location does.
+    /// Wait for one writer within `timeout`, and hand back its connection to
+    /// be read to its end — the writer's close is the end. `None` waits for
+    /// as long as it takes, which is what a listening Receive Location does.
     ///
     /// # Errors
-    /// Where no writer came within `timeout`, or the pipe could not be opened
-    /// or read.
-    pub fn accept_one(&self, timeout: Option<Duration>) -> Result<Vec<u8>> {
+    /// Where no writer came within `timeout`, or the pipe could not be
+    /// opened.
+    pub fn accept_one(
+        &self,
+        timeout: Option<Duration>,
+    ) -> Result<impl std::io::Read + Send + 'static> {
         #[cfg(windows)]
-        let mut pipe = transport::socket::accept_within(self, timeout, "no writer came")?;
+        let pipe = transport::socket::accept_within(self, timeout, "no writer came")?;
         #[cfg(not(windows))]
-        let mut pipe = self.open_within(timeout)?;
-        Ok(net::read::to_end(&mut pipe, net::MAX_BODY)?)
+        let pipe = self.open_within(timeout)?;
+        Ok(pipe)
     }
 }
 
@@ -229,7 +232,9 @@ mod tests {
         let listener = Listener::create(&path).expect("the pipe is made");
         let began = std::time::Instant::now();
 
-        let refused = listener.accept_one(Some(Duration::from_millis(200)));
+        let refused = listener
+            .accept_one(Some(Duration::from_millis(200)))
+            .map(drop);
         let waited = began.elapsed();
 
         assert!(refused.is_err(), "nothing was written, so nothing arrived");
