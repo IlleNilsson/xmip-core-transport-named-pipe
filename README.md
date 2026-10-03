@@ -8,6 +8,13 @@ A Receive Location keeps its pipe, made on the first receive and kept (`transpor
 
 A send target is read by `net::Target` in [xmip-core-library-net](https://github.com/IlleNilsson/xmip-core-library-net), the one reading of a URI every technology calls. Until 2026-09-28 this technology stripped its scheme by hand.
 
+## Acknowledgement
+
+Acceptance is at-most-once here. The writer's close ends the Stream and a pipe
+carries no reply, so the writer is gone before the receive cycle ends and
+nobody is told how it ended. The body is the connection, read to its end as the
+runtime asks, never whole in memory.
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain for the whole estate. Do not change it

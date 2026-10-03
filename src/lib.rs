@@ -22,6 +22,11 @@
 //! The origin URI is the pipe's name: `pipe://./orders` on Windows for
 //! `\\.\pipe\orders`, `pipe:///run/xmip/orders` for a FIFO. A send target
 //! is a pipe name, an operating-system path, or `pipe://` and either.
+//!
+//! **Acceptance is at-most-once here** ([`AT_MOST_ONCE`]): the writer's
+//! close ends the Stream and a pipe carries no reply, so the writer is gone
+//! before the receive cycle ends. The body is the connection, read to its
+//! end as the runtime asks.
 
 pub mod pipe;
 
@@ -37,6 +42,11 @@ use transport::kept::Kept;
 use transport::loopback::{FarEnd, Loopback};
 use transport::{Arrived, Configured, Directions, Transport};
 use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
+
+/// Why an arrival on a named pipe cannot be acknowledged after the receive
+/// cycle.
+pub const AT_MOST_ONCE: &str = "a named pipe has no reply: the writer's close ends the Stream, \
+                                and the writer is gone before the receive cycle ends";
 
 pub struct NamedPipeTransport {
     path: PathBuf,
@@ -91,13 +101,18 @@ impl NamedPipeTransport {
         Ok((self.bind()?, self.path.display().to_string()))
     }
 
-    /// Take one connection from an already-made pipe, to its end.
+    /// Take one connection from an already-made pipe. Its body is the
+    /// connection, read to its end as the runtime asks; acceptance is
+    /// at-most-once ([`AT_MOST_ONCE`]).
     ///
     /// # Errors
-    /// Where the pipe could not be read.
+    /// Where no writer came, or the pipe could not be opened.
     pub fn accept_one(&self, listener: &Listener) -> Result<Arrived> {
-        let bytes = listener.accept_one(self.timeout)?;
-        Ok(Arrived::new(self.origin(), bytes))
+        Ok(Arrived::new(
+            self.origin(),
+            listener.accept_one(self.timeout)?,
+            transport::Acknowledgement::at_most_once(AT_MOST_ONCE),
+        ))
     }
 }
 
@@ -130,8 +145,13 @@ impl Transport for NamedPipeTransport {
         Directions::BOTH
     }
 
-    /// Take one connection to its end, on the pipe the first receive made
-    /// and kept.
+    fn arrivals(&self) -> transport::Arrivals {
+        transport::Arrivals::Unordered("each pipe connection is a Stream of its own")
+    }
+
+    /// Take one connection, on the pipe the first receive made and kept,
+    /// read to its end by the runtime. Acceptance is at-most-once here: a
+    /// pipe has no reply to defer ([`AT_MOST_ONCE`]).
     fn receive(&self) -> Result<Vec<Arrived>> {
         let listener = self.receiving.bound(|| self.made())?;
         Ok(vec![self.accept_one(listener)?])
@@ -194,7 +214,7 @@ impl Loopback for NamedPipeTransport {
         let listener = transport.bind()?;
         let address = transport.path().display().to_string();
         Ok(Box::new(Held::new(address, move || {
-            transport.accept_one(&listener)
+            transport.accept_one(&listener)?.taken()
         })))
     }
 
@@ -257,7 +277,10 @@ mod tests {
             let at = address.clone();
             let writer =
                 std::thread::spawn(move || NamedPipeTransport::new(&at).send(&at, &[round]));
-            assert_eq!(receiver.receive().expect("received")[0].bytes, [round]);
+            let mut arrived = receiver.receive().expect("received");
+            let arrived = arrived.remove(0);
+            assert!(!arrived.defers(), "a pipe is at-most-once");
+            assert_eq!(arrived.taken().expect("taken").bytes, [round]);
             writer.join().expect("writer").expect("written");
         }
     }
@@ -376,8 +399,12 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
             pipe.send(&name, b"")
         });
+        // Each read to its end before the next is accepted: the writer of the
+        // long one waits on the reader, as a Receive Location's does.
         let first = far_end.accept_one(&listener).expect("the long one");
+        let first = first.taken().expect("read");
         let second = far_end.accept_one(&listener).expect("the empty one");
+        let second = second.taken().expect("read");
         sender.join().expect("thread").expect("sending");
         assert_eq!(first.bytes, long);
         assert!(second.bytes.is_empty());
