@@ -77,8 +77,10 @@ impl Listener {
     }
 
     /// Wait for one writer within `timeout`, and hand back its connection to
-    /// be read to its end — the writer's close is the end. `None` waits for
-    /// as long as it takes, which is what a listening Receive Location does.
+    /// be read to its end — the writer's close is the end — and the writer's
+    /// process id where the system says it: Windows does, of a pipe's
+    /// client; a FIFO has no peer. `None` waits for as long as it takes,
+    /// which is what a listening Receive Location does.
     ///
     /// # Errors
     /// Where no writer came within `timeout`, or the pipe could not be
@@ -86,12 +88,14 @@ impl Listener {
     pub fn accept_one(
         &self,
         timeout: Option<Duration>,
-    ) -> Result<impl std::io::Read + Send + 'static> {
+    ) -> Result<(impl std::io::Read + Send + 'static, Option<u32>)> {
         #[cfg(windows)]
         let pipe = transport::socket::accept_within(self, timeout, "no writer came")?;
+        #[cfg(windows)]
+        let client = pipe.client_process_id().ok();
         #[cfg(not(windows))]
-        let pipe = self.open_within(timeout)?;
-        Ok(pipe)
+        let (pipe, client) = (self.open_within(timeout)?, None);
+        Ok((pipe, client))
     }
 }
 

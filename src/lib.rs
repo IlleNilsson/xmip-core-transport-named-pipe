@@ -34,8 +34,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+use context::property::NAMED_PIPE_CLIENT_PROCESS_ID;
 use net::Target;
 pub use pipe::Listener;
+use transport::ArrivalIdentity;
 use transport::error::Result;
 use transport::held::Held;
 use transport::kept::Kept;
@@ -108,11 +110,16 @@ impl NamedPipeTransport {
     /// # Errors
     /// Where no writer came, or the pipe could not be opened.
     pub fn accept_one(&self, listener: &Listener) -> Result<Arrived> {
-        Ok(Arrived::new(
+        let (pipe, client) = listener.accept_one(self.timeout)?;
+        let arrived = Arrived::new(
             self.origin(),
-            listener.accept_one(self.timeout)?,
+            pipe,
             transport::Acknowledgement::at_most_once(AT_MOST_ONCE),
-        ))
+        );
+        Ok(match client {
+            Some(client) => arrived.observing(NAMED_PIPE_CLIENT_PROCESS_ID, client.to_string()),
+            None => arrived,
+        })
     }
 }
 
@@ -208,6 +215,14 @@ fn fresh_name() -> String {
 }
 
 impl Loopback for NamedPipeTransport {
+    fn arrival_identity(&self) -> ArrivalIdentity {
+        if cfg!(windows) {
+            ArrivalIdentity::Named(&[NAMED_PIPE_CLIENT_PROCESS_ID])
+        } else {
+            ArrivalIdentity::Unnamed("a FIFO has no peer: the kernel names no writer")
+        }
+    }
+
     /// A made pipe waiting for its one connection.
     fn far_end(&self) -> Result<Box<dyn FarEnd>> {
         let transport = Self::new(&fresh_name());
