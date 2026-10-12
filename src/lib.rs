@@ -156,6 +156,10 @@ impl Transport for NamedPipeTransport {
         transport::Arrivals::Unordered("each pipe connection is a Stream of its own")
     }
 
+    fn waiting(&self) -> transport::Waiting {
+        transport::Waiting::Waits("the pipe waits for a writer to connect")
+    }
+
     /// Take one connection, on the pipe the first receive made and kept,
     /// read to its end by the runtime. Acceptance is at-most-once here: a
     /// pipe has no reply to defer ([`AT_MOST_ONCE`]).
