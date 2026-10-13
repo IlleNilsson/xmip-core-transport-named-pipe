@@ -7,27 +7,13 @@
 //! file system that a reader opens and a writer opens, and the kernel
 //! joins the two. Both are one Stream per connection here — the writer
 //! closes, the reader sees the end — and nothing above this file knows
-//! which one it has.
+//! which one it has. Where a pipe called by a name is, is
+//! `net::pipe::path_of`'s, the one rule.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use transport::error::{Result, classify};
-
-/// The operating system's path for a pipe called `name`: as given where it
-/// already is a path, `\\.\pipe\<name>` on Windows otherwise, and a file in
-/// the temporary directory on Unix otherwise.
-#[must_use]
-pub fn path_of(name: &str) -> PathBuf {
-    if name.contains('/') || name.contains(char::from(92)) {
-        return PathBuf::from(name);
-    }
-    if cfg!(windows) {
-        PathBuf::from(format!("\\\\.\\pipe\\{name}"))
-    } else {
-        std::env::temp_dir().join(name)
-    }
-}
 
 /// The made end, waiting for a connection.
 pub struct Listener {
@@ -232,7 +218,7 @@ mod tests {
     fn a_pipe_nobody_writes_to_gives_up_within_its_timeout() {
         // The defect this asserts is the one that hung the Playground's gate:
         // a far end whose near end never came waited for good (2026-09-21).
-        let path = path_of(&format!("xmip-unanswered-{}", std::process::id()));
+        let path = net::pipe::path_of(&format!("xmip-unanswered-{}", std::process::id()));
         let listener = Listener::create(&path).expect("the pipe is made");
         let began = std::time::Instant::now();
 
@@ -253,26 +239,8 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_name_becomes_the_systems_path_and_a_path_stays() {
-        let bare = path_of("orders");
-        if cfg!(windows) {
-            assert_eq!(bare, PathBuf::from("\\\\.\\pipe\\orders"));
-        } else {
-            assert_eq!(bare, std::env::temp_dir().join("orders"));
-        }
-        assert_eq!(
-            path_of("/run/xmip/orders"),
-            PathBuf::from("/run/xmip/orders")
-        );
-        assert_eq!(
-            path_of("\\\\server\\pipe\\orders"),
-            PathBuf::from("\\\\server\\pipe\\orders")
-        );
-    }
-
-    #[test]
     fn a_pipe_nobody_made_cannot_be_written() {
-        let path = path_of(&format!("xmip-nobody-{}", std::process::id()));
+        let path = net::pipe::path_of(&format!("xmip-nobody-{}", std::process::id()));
         let error = write_once(&path, b"x").expect_err("nothing there");
         assert!(!error.retryable, "{error}");
     }

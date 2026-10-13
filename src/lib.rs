@@ -64,7 +64,7 @@ impl NamedPipeTransport {
     #[must_use]
     pub fn new(name: &str) -> Self {
         Self {
-            path: pipe::path_of(name),
+            path: net::pipe::path_of(name),
             timeout: None,
             receiving: Kept::new(),
         }
@@ -126,7 +126,8 @@ impl NamedPipeTransport {
 /// The path a target names: `pipe://` and a name or path, or either bare.
 #[must_use]
 pub fn target_path(target: &str) -> PathBuf {
-    pipe::path_of(Target::under(&["pipe"], target).map_or(target, |named| named.after_scheme()))
+    let named = Target::under(&["pipe"], target).map_or(target, |named| named.after_scheme());
+    net::pipe::path_of(named)
 }
 
 /// `pipe://` and the pipe's name, forward slashes throughout.
@@ -314,7 +315,7 @@ mod tests {
         let given = [("timeout".to_string(), Given::Text("250ms".to_string()))];
         let built = NamedPipeTransport::open("orders", Applies::Receive, &given).expect("built");
         assert_eq!(built.timeout, Some(Duration::from_millis(250)));
-        assert_eq!(built.path(), pipe::path_of("orders"));
+        assert_eq!(built.path(), net::pipe::path_of("orders"));
         let Err(refused) = NamedPipeTransport::open("orders", Applies::Send, &given) else {
             panic!("timeout is a receive setting");
         };
@@ -369,7 +370,7 @@ mod tests {
             pipe.claims().is_none(),
             "one writer at a time is the object"
         );
-        assert_eq!(pipe.path(), pipe::path_of("orders"));
+        assert_eq!(pipe.path(), net::pipe::path_of("orders"));
     }
 
     #[test]
@@ -386,7 +387,7 @@ mod tests {
             target_path("pipe:///run/xmip/orders"),
             PathBuf::from("/run/xmip/orders")
         );
-        assert_eq!(target_path("pipe://orders"), pipe::path_of("orders"));
+        assert_eq!(target_path("pipe://orders"), net::pipe::path_of("orders"));
     }
 
     #[test]
