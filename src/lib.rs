@@ -427,6 +427,6 @@ mod tests {
         let second = second.taken().expect("read");
         sender.join().expect("thread").expect("sending");
         assert_eq!(first.bytes, long);
-        assert!(second.bytes.is_empty());
+        assert_eq!(second.bytes, [] as [u8; 0]);
     }
 }
