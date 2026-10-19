@@ -15,6 +15,9 @@ carries no reply, so the writer is gone before the receive cycle ends and
 nobody is told how it ended. The body is the connection, read to its end as the
 runtime asks, never whole in memory.
 
+A send writes the Message to the pipe as it is read from the Ledger, a piece at
+a time, never whole in memory (`Sending::Streamed`, 2026-10-19).
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain for the whole estate. Do not change it

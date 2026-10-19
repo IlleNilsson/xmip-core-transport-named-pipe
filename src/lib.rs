@@ -164,14 +164,18 @@ impl Transport for NamedPipeTransport {
     /// Take one connection, on the pipe the first receive made and kept,
     /// read to its end by the runtime. Acceptance is at-most-once here: a
     /// pipe has no reply to defer ([`AT_MOST_ONCE`]).
-    fn receive(&self) -> Result<Vec<Arrived>> {
+    fn receive_up_to(&self, _most: usize) -> Result<Vec<Arrived>> {
         let listener = self.receiving.bound(|| self.made())?;
         Ok(vec![self.accept_one(listener)?])
     }
 
+    fn sending(&self) -> transport::Sending {
+        transport::Sending::Streamed("the pipe carries the body as it is read")
+    }
+
     /// Open the pipe the target names, write the bytes, close.
-    fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
-        pipe::write_once(&target_path(target), bytes)
+    fn send_from(&self, target: &str, outgoing: transport::Outgoing<'_>) -> Result<()> {
+        pipe::write_once(&target_path(target), &outgoing)
     }
 }
 
@@ -268,7 +272,10 @@ impl Loopback for NamedPipeTransport {
     /// happened, and the far end would wait on; the byte is the far end's
     /// to discard, since the failed send is what the round reports.
     fn unblock(&self, address: &str) {
-        drop(pipe::write_once(&target_path(address), &[0]));
+        drop(pipe::write_once(
+            &target_path(address),
+            &transport::Outgoing::held(&[0]),
+        ));
     }
 }
 
