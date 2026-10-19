@@ -183,13 +183,16 @@ impl Drop for Listener {
     }
 }
 
-/// Connect to the pipe at `path`, write `bytes` and close, which is what
-/// tells the reader the Stream is whole.
+/// Connect to the pipe at `path`, write `outgoing`'s body as it is read —
+/// never whole in memory — and close, which is what tells the reader the
+/// Stream is whole.
 ///
 /// # Errors
 /// Where nothing has made the pipe — permanent, as a missing file is — or
 /// it could not be written.
-pub fn write_once(path: &Path, bytes: &[u8]) -> Result<()> {
+pub fn write_once(path: &Path, outgoing: &transport::Outgoing<'_>) -> Result<()> {
+    // A pipe stream's flush is its own on Windows, a file's the trait's.
+    #[cfg(not(windows))]
     use std::io::Write;
     #[cfg(windows)]
     let mut stream = {
@@ -202,9 +205,7 @@ pub fn write_once(path: &Path, bytes: &[u8]) -> Result<()> {
         .write(true)
         .open(path)
         .map_err(|e| classify("connecting to the pipe", &e))?;
-    stream
-        .write_all(bytes)
-        .map_err(|e| classify("writing to the pipe", &e))?;
+    outgoing.write_to(&mut stream)?;
     stream
         .flush()
         .map_err(|e| classify("flushing the pipe", &e))
@@ -241,7 +242,7 @@ mod tests {
     #[test]
     fn a_pipe_nobody_made_cannot_be_written() {
         let path = net::pipe::path_of(&format!("xmip-nobody-{}", std::process::id()));
-        let error = write_once(&path, b"x").expect_err("nothing there");
+        let error = write_once(&path, &transport::Outgoing::held(b"x")).expect_err("nothing there");
         assert!(!error.retryable, "{error}");
     }
 }
