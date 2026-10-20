@@ -16,7 +16,7 @@
 //!
 //! Proven where the operating system has the object, which is every system
 //! the estate builds on: a Windows box proves the Windows pipe, a Unix box
-//! the FIFO. A pipe is not an artefact anyone claims — one writer at a time
+//! the FIFO. A pipe is not an artifact anyone claims — one writer at a time
 //! is what the object already is — so [`Transport::claims`] answers `None`.
 //!
 //! The origin URI is the pipe's name: `pipe://./orders` on Windows for
