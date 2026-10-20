@@ -92,7 +92,7 @@ impl Listener {
 /// far end whose near end never came waited for good — the defect that
 /// hung the Playground's gate six times over TCP, and the same line here.
 /// A pipe instance is not a socket and has no readiness the capability's
-/// wait can block on; its connection is signalled through overlapped I/O,
+/// wait can block on; its connection is signaled through overlapped I/O,
 /// which the pipe library does not offer and this crate may not write
 /// unsafely. So the wait here is a nap of a quarter of a millisecond
 /// between tries, where the socket listeners wait on the operating
