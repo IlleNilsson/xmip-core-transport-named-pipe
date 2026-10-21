@@ -2,7 +2,9 @@
 
 Named pipe transport: one connection to a named pipe is one Stream — the Windows object under \\.\pipe, a FIFO on Unix. A technology of [xmip-core-transport](https://github.com/IlleNilsson/xmip-core-transport).
 
-A Receive Location waits for a writer within its timeout through the capability's one bounded accept (`transport::socket::accept_within`). A Windows pipe instance has no readiness a safe call can wait on, so the wait there naps a quarter of a millisecond between tries; until 2026-09-27 this crate carried its own copy of the loop with a two-millisecond nap.
+The pipe is `net::pipe`'s in [xmip-core-library-net](https://github.com/IlleNilsson/xmip-core-library-net), the estate's one, which a node's local operate endpoint makes its pipe through too: one writer is exactly one connection, and an accept returns only once a writer has connected. On Windows it is its owner's, the system's and the administrators', refuses clients from another machine, waits for a writer on the system's event, and names the writer's process (`named-pipe.client-process-id`); on Unix it is a FIFO, its owner's alone. A Receive Location waits for a writer within its timeout. Until 2026-10-21 this crate made its pipe through the `interprocess` crate, whose defects were reported upstream (#100, #101), and on Windows napped a quarter of a millisecond between tries for want of a wait; until 2026-09-27 it carried its own copy of the loop with a two-millisecond nap.
+
+A writer that writes nothing is a Stream of nothing on both systems. Until 2026-10-21 a Windows pipe dropped a writer that wrote nothing and closed before its reader was waiting, and the loopback refused an empty Stream there.
 
 A Receive Location keeps its pipe, made on the first receive and kept (`transport::kept::Kept`): a writer that opens it between two receives waits for the next, where until 2026-09-27 each receive made the pipe anew.
 
