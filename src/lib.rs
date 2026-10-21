@@ -10,9 +10,11 @@
 //! one machine; on Unix it is a FIFO, a special file `mkfifo` makes. A
 //! Receive Location makes its pipe and takes one connection to its end; a
 //! Send Location opens the pipe, writes the Stream and closes, which is how
-//! the receiver knows the Stream is whole. `pipe.rs` holds the object on
-//! each system; this file holds the transport. The standard library makes
-//! neither object, so the `interprocess` crate does, behind a safe surface.
+//! the receiver knows the Stream is whole. The object on each system is
+//! `net::pipe`'s, the estate's one pipe, which the runtime's local endpoint
+//! makes its pipe through too: one client is one connection, and an accept
+//! returns only once a client has connected. Until 2026-10-21 this crate
+//! made its pipe through the `interprocess` crate.
 //!
 //! Proven where the operating system has the object, which is every system
 //! the estate builds on: a Windows box proves the Windows pipe, a Unix box
@@ -28,17 +30,15 @@
 //! before the receive cycle ends. The body is the connection, read to its
 //! end as the runtime asks.
 
-pub mod pipe;
-
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use context::property::NAMED_PIPE_CLIENT_PROCESS_ID;
 use net::Target;
-pub use pipe::Listener;
+pub use net::pipe::Listener;
 use transport::ArrivalIdentity;
-use transport::error::Result;
+use transport::error::{Result, classify};
 use transport::held::Held;
 use transport::kept::Kept;
 use transport::loopback::{FarEnd, Loopback};
@@ -90,12 +90,15 @@ impl NamedPipeTransport {
         origin_of(&self.path)
     }
 
-    /// Make the pipe, so a sender has something to open.
+    /// Make the pipe, so a sender has something to open: its owner's, the
+    /// system's and the administrators' on Windows, its owner's on Unix. A
+    /// FIFO a previous run left behind is used.
     ///
     /// # Errors
-    /// Where the name is not permitted.
+    /// Where the name is not permitted or, on Unix, its directory is
+    /// missing.
     pub fn bind(&self) -> Result<Listener> {
-        Listener::create(&self.path)
+        Listener::bind(&self.path, &[]).map_err(|e| classify("creating the pipe", &e))
     }
 
     /// The pipe made, and its path: what a Receive Location keeps.
@@ -103,14 +106,21 @@ impl NamedPipeTransport {
         Ok((self.bind()?, self.path.display().to_string()))
     }
 
-    /// Take one connection from an already-made pipe. Its body is the
-    /// connection, read to its end as the runtime asks; acceptance is
-    /// at-most-once ([`AT_MOST_ONCE`]).
+    /// Take one connection from an already-made pipe, once a writer has
+    /// connected, within the timeout where one is set. Its body is the
+    /// connection, read to its end as the runtime asks — the writer's close
+    /// is the end — and the writer's process id travels with it where the
+    /// system names it: Windows does, of a pipe's client; a FIFO has no
+    /// peer. Acceptance is at-most-once ([`AT_MOST_ONCE`]).
     ///
     /// # Errors
-    /// Where no writer came, or the pipe could not be opened.
+    /// Where no writer came within the timeout, or the pipe could not be
+    /// opened.
     pub fn accept_one(&self, listener: &Listener) -> Result<Arrived> {
-        let (pipe, client) = listener.accept_one(self.timeout)?;
+        let pipe = listener
+            .accept(self.timeout)
+            .map_err(|e| classify("waiting for a writer", &e))?;
+        let client = pipe.peer_process();
         let arrived = Arrived::new(
             self.origin(),
             pipe,
@@ -121,6 +131,24 @@ impl NamedPipeTransport {
             None => arrived,
         })
     }
+}
+
+/// Connect to the pipe at `path` — once an instance is free on Windows,
+/// once its reader is there on Unix — write `outgoing`'s body as it is
+/// read, never whole in memory, and close, which is what tells the reader
+/// the Stream is whole.
+///
+/// # Errors
+/// Where nothing has made the pipe — permanent, as a missing file is — or
+/// it could not be written.
+pub fn write_once(path: &Path, outgoing: &transport::Outgoing<'_>) -> Result<()> {
+    use std::io::Write;
+    let mut stream =
+        net::pipe::connect(path, None).map_err(|e| classify("connecting to the pipe", &e))?;
+    outgoing.write_to(&mut stream)?;
+    stream
+        .flush()
+        .map_err(|e| classify("flushing the pipe", &e))
 }
 
 /// The path a target names: `pipe://` and a name or path, or either bare.
@@ -175,7 +203,7 @@ impl Transport for NamedPipeTransport {
 
     /// Open the pipe the target names, write the bytes, close.
     fn send_from(&self, target: &str, outgoing: transport::Outgoing<'_>) -> Result<()> {
-        pipe::write_once(&target_path(target), &outgoing)
+        write_once(&target_path(target), &outgoing)
     }
 }
 
@@ -242,39 +270,20 @@ impl Loopback for NamedPipeTransport {
         })))
     }
 
-    /// On Windows a connection that writes nothing and closes before the
-    /// reader is waiting is one the pipe never saw: the object drops it,
-    /// and the reader waits on. A Stream of nothing therefore reaches a
-    /// reader already in its accept — the FIFO carries it whichever end
-    /// opened first — and a loopback, whose two ends start together,
-    /// declares it rather than racing for it.
-    fn refuses(&self, payload: &[u8]) -> Option<String> {
-        if cfg!(windows) && payload.is_empty() {
-            Some(String::from(
-                "a Stream of nothing: a Windows pipe drops a connection that \
-                 writes nothing and closes before the reader is waiting",
-            ))
-        } else {
-            None
-        }
-    }
-
     fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {
-        if let Some(why) = self.refuses(payload) {
-            return Err(transport::error::protocol_error(why));
-        }
         Self::new(address).send(address, payload)
     }
 
-    /// A pipe is connected to by opening it, not by a TCP connect: open,
-    /// write one byte, close. One byte rather than none, because a poke
-    /// that writes nothing is, on Windows, a connection that never
-    /// happened, and the far end would wait on; the byte is the far end's
-    /// to discard, since the failed send is what the round reports.
+    /// A pipe is connected to by opening it, not by a TCP connect: open
+    /// and close, a Stream of nothing the far end discards, since the
+    /// failed send is what the round reports. Until 2026-10-21 a Windows
+    /// pipe dropped a connection that wrote nothing and closed before its
+    /// reader was waiting, so the poke wrote one byte and a loopback
+    /// refused an empty Stream; a pipe made in `net::pipe` keeps it.
     fn unblock(&self, address: &str) {
-        drop(pipe::write_once(
+        drop(write_once(
             &target_path(address),
-            &transport::Outgoing::held(&[0]),
+            &transport::Outgoing::held(&[]),
         ));
     }
 }
@@ -337,12 +346,7 @@ mod tests {
     fn the_loopback_returns_the_edge_payloads_whole() {
         let pair = NamedPipeTransport::loopback();
         for (name, bytes) in edge_payloads() {
-            if let Some(why) = pair.refuses(&bytes) {
-                assert!(cfg!(windows) && name == "empty", "{name}: {why}");
-                let error = pair.round(&bytes).expect_err("refused, and judged");
-                assert!(error.message.contains("a Stream of nothing"), "{error}");
-                continue;
-            }
+            assert_eq!(pair.refuses(&bytes), None, "{name}");
             let arrived = pair
                 .round(&bytes)
                 .unwrap_or_else(|error| panic!("{name}: {error}"));
@@ -350,8 +354,54 @@ mod tests {
             assert!(arrived.origin_uri.starts_with("pipe://"), "{name}");
         }
         assert!(pair.ceiling().is_none());
-        assert!(pair.refuses(b"\r\n\0").is_none());
-        assert_eq!(pair.refuses(b"").is_some(), cfg!(windows));
+    }
+
+    #[test]
+    fn a_pipe_nobody_writes_to_gives_up_within_its_timeout() {
+        // The defect this asserts is the one that hung the Playground's gate:
+        // a far end whose near end never came waited for good (2026-09-21).
+        let far_end = NamedPipeTransport::new(&unique("unanswered"))
+            .timing_out_after(Duration::from_millis(200));
+        let listener = far_end.bind().expect("the pipe is made");
+        let began = std::time::Instant::now();
+        let refused = far_end.accept_one(&listener).map(drop);
+        let waited = began.elapsed();
+        let error = refused.expect_err("nothing was written, so nothing arrived");
+        assert!(error.retryable, "{error}");
+        assert!(
+            waited < Duration::from_millis(400),
+            "gave up after {waited:?}, which is not a timeout"
+        );
+        assert!(
+            waited >= Duration::from_millis(195),
+            "gave up after {waited:?}, before it had waited"
+        );
+    }
+
+    #[test]
+    fn a_pipe_nobody_made_cannot_be_written() {
+        let path = net::pipe::path_of(&unique("nobody"));
+        let error = write_once(&path, &transport::Outgoing::held(b"x")).expect_err("nothing there");
+        assert!(!error.retryable, "{error}");
+    }
+
+    #[test]
+    fn one_writer_is_one_stream_and_no_second() {
+        let name = unique("one");
+        let far_end = NamedPipeTransport::new(&name).timing_out_after(Duration::from_millis(50));
+        let listener = far_end.bind().expect("making the pipe");
+        let writer =
+            std::thread::spawn(move || NamedPipeTransport::new(&name).send(&name, b"once"));
+        // Waits of 50 ms, until the writer, which starts beside it, comes.
+        let first = (0..100)
+            .find_map(|_| far_end.accept_one(&listener).ok())
+            .expect("the writer came")
+            .taken()
+            .expect("read");
+        writer.join().expect("writer").expect("written");
+        assert_eq!(first.bytes, b"once");
+        let second = far_end.accept_one(&listener).map(drop);
+        assert!(second.is_err(), "one writer gave a second Stream");
     }
 
     #[test]
