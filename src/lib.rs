@@ -154,7 +154,8 @@ pub fn write_once(path: &Path, outgoing: &transport::Outgoing<'_>) -> Result<()>
 /// The path a target names: `pipe://` and a name or path, or either bare.
 #[must_use]
 pub fn target_path(target: &str) -> PathBuf {
-    let named = Target::under(&["pipe"], target).map_or(target, |named| named.after_scheme());
+    let named = Target::under(<NamedPipeTransport as Configured>::SCHEMES, target)
+        .map_or(target, |named| named.after_scheme());
     net::pipe::path_of(named)
 }
 
@@ -220,6 +221,9 @@ impl Configured for NamedPipeTransport {
             applies: Applies::Receive,
         }],
     };
+
+    /// The schemes a Location's address is entered with to choose this technology.
+    const SCHEMES: &'static [&'static str] = &["pipe"];
 
     fn configured(address: &str, settings: &Read) -> Result<Self> {
         let transport = Self::new(address);
