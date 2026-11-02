@@ -372,10 +372,8 @@ mod tests {
         let waited = began.elapsed();
         let error = refused.expect_err("nothing was written, so nothing arrived");
         assert!(error.retryable, "{error}");
-        assert!(
-            waited < Duration::from_millis(400),
-            "gave up after {waited:?}, which is not a timeout"
-        );
+        // How soon after its wait it gives up is the timing program's
+        // (tests/measured).
         assert!(
             waited >= Duration::from_millis(195),
             "gave up after {waited:?}, before it had waited"
