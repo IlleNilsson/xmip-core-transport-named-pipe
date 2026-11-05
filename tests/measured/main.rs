@@ -20,7 +20,7 @@ fn unique(name: &str) -> String {
 
 #[test]
 fn a_pipe_nobody_writes_to_gives_up_soon_after_its_timeout() {
-    // The defect this asserts is the one that hung the Playground's gate: a
+    // The defect this asserts is the one that hung the Essentials' gate: a
     // far end whose near end never came waited for good (2026-09-21).
     let far_end =
         NamedPipeTransport::new(&unique("unanswered")).timing_out_after(Duration::from_millis(200));
