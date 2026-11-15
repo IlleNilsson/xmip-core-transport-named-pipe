@@ -43,7 +43,7 @@ use transport::held::Held;
 use transport::kept::Kept;
 use transport::loopback::{FarEnd, Loopback};
 use transport::{Arrived, Configured, Directions, Transport};
-use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
+use xcore::settings::{Applies, Read, Settings};
 
 /// Why an arrival on a named pipe cannot be acknowledged after the receive
 /// cycle.
@@ -68,14 +68,6 @@ impl NamedPipeTransport {
             timeout: None,
             receiving: Kept::new(),
         }
-    }
-
-    /// The same pipe, waiting at most `timeout` for a writer. Unset, a
-    /// listening pipe waits for as long as it takes.
-    #[must_use]
-    pub const fn timing_out_after(mut self, timeout: Duration) -> Self {
-        self.timeout = Some(timeout);
-        self
     }
 
     /// Where the pipe is.
@@ -213,24 +205,22 @@ impl Configured for NamedPipeTransport {
     /// Location makes it; a Send Location's target names the pipe it opens.
     const SETTINGS: &'static Settings = &Settings {
         technology: env!("CARGO_PKG_NAME"),
-        settings: &[Setting {
-            name: "timeout",
-            kind: Kind::Duration,
-            presence: Presence::Optional,
-            meaning: "How long a made pipe waits for a writer; unbounded when left out.",
-            applies: Applies::Receive,
-        }],
+        settings: &[transport::configured::timeout(
+            Applies::Receive,
+            None,
+            "How long a made pipe waits for a writer; unbounded when left out.",
+        )],
     };
 
     /// The schemes a Location's address is entered with to choose this technology.
     const SCHEMES: &'static [&'static str] = &["pipe"];
 
-    fn configured(address: &str, settings: &Read) -> Result<Self> {
-        let transport = Self::new(address);
-        Ok(match settings.optional_duration("timeout") {
-            Some(timeout) => transport.timing_out_after(timeout),
-            None => transport,
-        })
+    fn timeout_kept(&mut self) -> Option<&mut dyn transport::configured::TimeoutKept> {
+        Some(&mut self.timeout)
+    }
+
+    fn configured(address: &str, _settings: &Read) -> Result<Self> {
+        Ok(Self::new(address))
     }
 }
 
