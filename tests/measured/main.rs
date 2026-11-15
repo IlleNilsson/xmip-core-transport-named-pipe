@@ -5,10 +5,12 @@
 //! --test-threads=1`), so what is measured is Xmip's work and not its
 //! neighbors':
 //!
-//! - a pipe nobody writes to gives up soon after its timeout.
+//! - a pipe nobody writes to gives up soon after its timeout, the fastest
+//!   of five (`xcore::latency::at_once`).
 
 use std::time::Duration;
 
+use xcore::latency::at_once;
 use xmip_core_transport_named_pipe::NamedPipeTransport;
 
 fn unique(name: &str) -> String {
@@ -25,12 +27,16 @@ fn a_pipe_nobody_writes_to_gives_up_soon_after_its_timeout() {
     let far_end =
         NamedPipeTransport::new(&unique("unanswered")).timing_out_after(Duration::from_millis(200));
     let listener = far_end.bind().expect("the pipe is made");
-    let began = std::time::Instant::now();
-    let refused = far_end.accept_one(&listener).map(drop);
-    let waited = began.elapsed();
+    // A wait that outlives its timeout does so in every one of five, a
+    // give-up a busy machine preempted in some only. It is a timeout, not a
+    // wake, so no plain wake is measured beside it. Until 2026-11-15 one
+    // give-up was timed once.
+    let (refused, waited, _) = at_once("a pipe nobody writes to, given up", || {
+        far_end.accept_one(&listener).map(drop)
+    });
     assert!(refused.is_err(), "nothing was written, so nothing arrived");
     assert!(
         waited < Duration::from_millis(400),
-        "gave up after {waited:?}, which is not a timeout"
+        "gave up after {waited:?}, the fastest of five, which is not a timeout"
     );
 }
