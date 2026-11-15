@@ -10,6 +10,7 @@
 
 use std::time::Duration;
 
+use transport::Configured;
 use xcore::latency::at_once;
 use xmip_core_transport_named_pipe::NamedPipeTransport;
 
