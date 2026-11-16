@@ -6,7 +6,7 @@ The pipe is `net::pipe`'s in [xmip-core-library-net](https://github.com/IlleNils
 
 A writer that writes nothing is a Stream of nothing on both systems. Until 2026-10-21 a Windows pipe dropped a writer that wrote nothing and closed before its reader was waiting, and the loopback refused an empty Stream there.
 
-A Receive Location keeps its pipe, made on the first receive and kept (`transport::kept::Kept`): a writer that opens it between two receives waits for the next, where until 2026-09-27 each receive made the pipe anew.
+A Receive Location keeps its pipe, made as its transport is opened (`Configured::listening`; on its first receive until 2026-11-16) and kept (`transport::kept::Kept`): a writer that opens it between two receives waits for the next, where until 2026-09-27 each receive made the pipe anew.
 
 A send target is read by `net::Target` in [xmip-core-library-net](https://github.com/IlleNilsson/xmip-core-library-net), the one reading of a URI every technology calls. Until 2026-09-28 this technology stripped its scheme by hand.
 
