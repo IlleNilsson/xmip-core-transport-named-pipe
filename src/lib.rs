@@ -53,7 +53,7 @@ pub const AT_MOST_ONCE: &str = "a named pipe has no reply: the writer's close en
 pub struct NamedPipeTransport {
     path: PathBuf,
     timeout: Option<Duration>,
-    /// The pipe the first receive makes, and every receive takes from: a
+    /// The pipe its open makes, and every receive takes from: a
     /// writer that opens it between two receives waits for the next.
     receiving: Kept<Listener>,
 }
@@ -182,11 +182,11 @@ impl Transport for NamedPipeTransport {
         transport::Waiting::Waits("the pipe waits for a writer to connect")
     }
 
-    /// Take one connection, on the pipe the first receive made and kept,
+    /// Take one connection, on the pipe its open made and kept,
     /// read to its end by the runtime. Acceptance is at-most-once here: a
     /// pipe has no reply to defer ([`AT_MOST_ONCE`]).
     fn receive_up_to(&self, _most: usize) -> Result<Vec<Arrived>> {
-        let listener = self.receiving.bound(|| self.made())?;
+        let listener = self.receiving.listener()?;
         Ok(vec![self.accept_one(listener)?])
     }
 
@@ -221,6 +221,12 @@ impl Configured for NamedPipeTransport {
 
     fn configured(address: &str, _settings: &Read) -> Result<Self> {
         Ok(Self::new(address))
+    }
+
+    /// The pipe every receive takes from, made where a Receive Location
+    /// names it.
+    fn listening(&self) -> Result<Option<&str>> {
+        self.receiving.listening(|| self.made())
     }
 }
 
@@ -301,7 +307,7 @@ mod tests {
         receiver.receiving.bound(|| receiver.made()).expect("made");
         let address = receiver.receiving.address().expect("address").to_string();
         // Each writer opens the pipe before its receive begins: the pipe
-        // made by the first receive is still there. One writer at a time,
+        // made by its open is still there. One writer at a time,
         // because a FIFO joins writers that overlap into one Stream.
         for round in 0..5u8 {
             let at = address.clone();
