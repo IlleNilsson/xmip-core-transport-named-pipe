@@ -83,12 +83,14 @@ impl NamedPipeTransport {
     }
 
     /// Make the pipe, so a sender has something to open: its owner's, the
-    /// system's and the administrators' on Windows, its owner's on Unix. A
-    /// FIFO a previous run left behind is used.
+    /// system's and the administrators' on Windows, its owner's on Unix,
+    /// where its path is claimed first (`net::socket_file`) and a FIFO a
+    /// stopped one left is made anew.
     ///
     /// # Errors
     /// Where the name is not permitted or, on Unix, its directory is
-    /// missing.
+    /// missing, another holds the path, or a file of another kind is
+    /// there, which is kept.
     pub fn bind(&self) -> Result<Listener> {
         Listener::bind(&self.path, &[]).map_err(|e| classify("creating the pipe", &e))
     }

@@ -6,6 +6,8 @@ The pipe is `net::pipe`'s in [xmip-core-library-net](https://github.com/IlleNils
 
 A writer that writes nothing is a Stream of nothing on both systems. Until 2026-10-21 a Windows pipe dropped a writer that wrote nothing and closed before its reader was waiting, and the loopback refused an empty Stream there.
 
+On Unix the FIFO is made on a path claimed through `net::socket_file`, the one claim of a path a listener binds (ADR-0018, amendment 2026-11-19): `<path>.lock` held while the pipe is made, and removed with it; another Location holding the path, or a file of another kind there, which is kept, refuses the Location at phase 9 naming the path; a FIFO a stopped one left is made anew, its owner's alone; and only the Location's own FIFO goes with it. Until 2026-11-19 a FIFO a previous run left was used as it was, and an ordinary file at the path was taken for one and removed as the Location went.
+
 A Receive Location keeps its pipe, made as its transport is opened (`Configured::listening`; on its first receive until 2026-11-16) and kept (`transport::kept::Kept`): a writer that opens it between two receives waits for the next, where until 2026-09-27 each receive made the pipe anew.
 
 A send target is read by `net::Target` in [xmip-core-library-net](https://github.com/IlleNilsson/xmip-core-library-net), the one reading of a URI every technology calls. Until 2026-09-28 this technology stripped its scheme by hand.
