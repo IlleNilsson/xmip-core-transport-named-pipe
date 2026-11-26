@@ -29,27 +29,46 @@
 //! close ends the Stream and a pipe carries no reply, so the writer is gone
 //! before the receive cycle ends. The body is the connection, read to its
 //! end as the runtime asks.
+//!
+//! **Built with its `declaration` feature alone** the crate is
+//! [`declaration`], what a Location of it is configured with, and none of
+//! the code above, which is behind the default feature: what the surfaces'
+//! library carries (ADR-0064, amendment 2026-11-26).
 
+#[cfg(feature = "declaration")]
+pub mod declaration;
+
+#[cfg(feature = "default")]
 use std::path::{Path, PathBuf};
+#[cfg(feature = "default")]
 use std::sync::atomic::{AtomicU32, Ordering};
+#[cfg(feature = "default")]
 use std::time::Duration;
 
+#[cfg(feature = "default")]
 use context::property::NAMED_PIPE_CLIENT_PROCESS_ID;
+#[cfg(feature = "default")]
 use net::Target;
+#[cfg(feature = "default")]
 pub use net::pipe::Listener;
-use transport::ArrivalIdentity;
+#[cfg(feature = "default")]
 use transport::error::{Result, classify};
-use transport::held::Held;
-use transport::kept::Kept;
+#[cfg(feature = "default")]
 use transport::loopback::{FarEnd, Loopback};
-use transport::{Arrived, Configured, Directions, Transport};
-use xcore::settings::{Applies, Read, Settings};
+#[cfg(feature = "default")]
+use transport::{
+    ArrivalIdentity, Arrived, Configured, Directions, Transport, held::Held, kept::Kept,
+};
+#[cfg(feature = "default")]
+use xcore::settings::{Read, Settings};
 
 /// Why an arrival on a named pipe cannot be acknowledged after the receive
 /// cycle.
+#[cfg(feature = "default")]
 pub const AT_MOST_ONCE: &str = "a named pipe has no reply: the writer's close ends the Stream, \
                                 and the writer is gone before the receive cycle ends";
 
+#[cfg(feature = "default")]
 pub struct NamedPipeTransport {
     path: PathBuf,
     timeout: Option<Duration>,
@@ -58,6 +77,7 @@ pub struct NamedPipeTransport {
     receiving: Kept<Listener>,
 }
 
+#[cfg(feature = "default")]
 impl NamedPipeTransport {
     /// The pipe called `name`: a bare name under `\\.\pipe\` on Windows and
     /// in the temporary directory on Unix, or a path as it is.
@@ -135,6 +155,7 @@ impl NamedPipeTransport {
 /// # Errors
 /// Where nothing has made the pipe — permanent, as a missing file is — or
 /// it could not be written.
+#[cfg(feature = "default")]
 pub fn write_once(path: &Path, outgoing: &transport::Outgoing<'_>) -> Result<()> {
     use std::io::Write;
     let mut stream =
@@ -146,14 +167,16 @@ pub fn write_once(path: &Path, outgoing: &transport::Outgoing<'_>) -> Result<()>
 }
 
 /// The path a target names: `pipe://` and a name or path, or either bare.
+#[cfg(feature = "default")]
 #[must_use]
 pub fn target_path(target: &str) -> PathBuf {
-    let named = Target::under(<NamedPipeTransport as Configured>::SCHEMES, target)
-        .map_or(target, |named| named.after_scheme());
+    let named =
+        Target::under(declaration::SCHEMES, target).map_or(target, |named| named.after_scheme());
     net::pipe::path_of(named)
 }
 
 /// `pipe://` and the pipe's name, forward slashes throughout.
+#[cfg(feature = "default")]
 #[must_use]
 pub fn origin_of(path: &Path) -> String {
     let text = path.display().to_string().replace(char::from(92), "/");
@@ -167,6 +190,7 @@ pub fn origin_of(path: &Path) -> String {
     }
 }
 
+#[cfg(feature = "default")]
 impl Transport for NamedPipeTransport {
     fn name(&self) -> &'static str {
         "named-pipe"
@@ -202,20 +226,10 @@ impl Transport for NamedPipeTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Configured for NamedPipeTransport {
-    /// The address is the pipe: a bare name, or a path as it is. A Receive
-    /// Location makes it; a Send Location's target names the pipe it opens.
-    const SETTINGS: &'static Settings = &Settings {
-        technology: env!("CARGO_PKG_NAME"),
-        settings: &[transport::configured::timeout(
-            Applies::Receive,
-            None,
-            "How long a made pipe waits for a writer; unbounded when left out.",
-        )],
-    };
-
-    /// The schemes a Location's address is entered with to choose this technology.
-    const SCHEMES: &'static [&'static str] = &["pipe"];
+    const SETTINGS: &'static Settings = declaration::SETTINGS;
+    const SCHEMES: &'static [&'static str] = declaration::SCHEMES;
 
     fn timeout_kept(&mut self) -> Option<&mut dyn transport::configured::TimeoutKept> {
         Some(&mut self.timeout)
@@ -232,6 +246,7 @@ impl Configured for NamedPipeTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl NamedPipeTransport {
     /// Both ends on this machine: a pipe of this process's own. Each far
     /// end makes a fresh one, so rounds driven at once from several threads
@@ -244,6 +259,7 @@ impl NamedPipeTransport {
 
 /// A pipe name no other far end of this process has: the pipe is the
 /// address, so two rounds at once need two pipes.
+#[cfg(feature = "default")]
 fn fresh_name() -> String {
     static COUNTER: AtomicU32 = AtomicU32::new(1);
     format!(
@@ -253,6 +269,7 @@ fn fresh_name() -> String {
     )
 }
 
+#[cfg(feature = "default")]
 impl Loopback for NamedPipeTransport {
     fn arrival_identity(&self) -> ArrivalIdentity {
         if cfg!(windows) {
@@ -325,7 +342,7 @@ mod tests {
 
     #[test]
     fn named_pipe_declares_its_settings_and_reads_through_them() {
-        use xcore::settings::Given;
+        use xcore::settings::{Applies, Given};
         assert_eq!(
             NamedPipeTransport::SETTINGS.problems(),
             Vec::<String>::new()
